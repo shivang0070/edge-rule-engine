@@ -112,3 +112,14 @@ func (w *EventWindow) Entries() []EventEntry {
 	copy(copyEntries, w.entries)
 	return copyEntries
 }
+
+func (w *EventWindow) Aggregate(agg string) any {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	switch agg {
+	case "count":
+		return len(w.entries)
+	}
+	return 0
+}

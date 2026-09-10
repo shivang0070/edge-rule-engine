@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Activity, ShieldCheck, PauseCircle, PlayCircle, Clock, Trash2, Edit, X, Plus, Code } from 'lucide-react';
+import { Activity, ShieldCheck, PauseCircle, PlayCircle, Clock, Trash2, Edit, X, Plus, Code, Network } from 'lucide-react';
 
 const STATE_VARIABLES = [
   { id: 'occupancy.total', label: 'Total Occupancy' },
@@ -16,11 +16,7 @@ const STATE_VARIABLES = [
   { id: 'window.uniqueVehicles', label: 'Unique Vehicles (Rolling Window)' },
 ];
 
-const EVENT_VARIABLES = [
-  { id: 'window.entranceCount', label: 'Entrance Count' },
-  { id: 'window.exitCount', label: 'Exit Count' },
-  { id: 'window.count', label: 'Total Events' },
-];
+
 
 const OPERATORS = [
   { id: '>', label: 'Greater Than (>)' },
@@ -40,7 +36,7 @@ export default function App() {
   
   // Modal state
   const [editingRule, setEditingRule] = useState<any>(null);
-  const [builderConditions, setBuilderConditions] = useState<{variable:string, operator:string, value:string}[] | null>(null);
+  const [builderConditions, setBuilderConditions] = useState<{depAlias:string, variable:string, operator:string, value:string}[] | null>(null);
   const [forceRaw, setForceRaw] = useState(false);
 
   useEffect(() => {
@@ -83,31 +79,79 @@ export default function App() {
   };
 
   // Smart parser to reverse-engineer Expr strings into UI components
+  // V2 expressions look like: "entrance.occupancy.person > 3" OR "default.occupancy.person > 3"
   const parseExpression = (expr: string) => {
-    if (!expr) return [{ variable: 'occupancy.person', operator: '>', value: '3' }];
+    if (!expr) return [{ depAlias: 'default', variable: 'occupancy.person', operator: '>', value: '3' }];
     const conditions = [];
     const parts = expr.split('&&');
     for (let p of parts) {
-      const match = p.trim().match(/^([\w.]+)\s*(>=|<=|>|<|==|!=)\s*([\d.]+)$/);
+      const match = p.trim().match(/^([\w]+)\.([\w.]+)\s*(>=|<=|>|<|==|!=)\s*([\d.]+)$/);
       if (match) {
-        conditions.push({ variable: match[1], operator: match[2], value: match[3] });
+        conditions.push({ depAlias: match[1], variable: match[2], operator: match[3], value: match[4] });
       } else {
-        return null; // Expression is too complex for visual builder
+        // Fallback for V1 un-aliased expressions (which compile successfully due to spreading to root)
+        const matchV1 = p.trim().match(/^([\w.]+)\s*(>=|<=|>|<|==|!=)\s*([\d.]+)$/);
+        if (matchV1) {
+            conditions.push({ depAlias: 'default', variable: matchV1[1], operator: matchV1[2], value: matchV1[3] });
+        } else {
+            return null; // Expression is too complex for visual builder
+        }
       }
     }
     return conditions.length ? conditions : null;
   };
 
   const openEditModal = (rule: any) => {
-    setEditingRule(JSON.parse(JSON.stringify(rule)));
+    const r = JSON.parse(JSON.stringify(rule));
+    // Auto-migrate V1 to V2 in UI state if needed
+    if (!r.dependencies || r.dependencies.length === 0) {
+      if (r.scope) {
+        r.dependencies = [{
+          id: 'dep-default',
+          alias: 'default',
+          cameraId: r.scope.cameraId,
+          roiId: r.scope.roiId,
+          source: r.source || 'state'
+        }];
+      } else {
+        r.dependencies = [];
+      }
+    }
+    setEditingRule(r);
     setForceRaw(false);
     
-    const parsed = parseExpression(rule.condition.expression);
+    const parsed = parseExpression(r.condition?.expression);
     if (parsed) {
       setBuilderConditions(parsed);
     } else {
       setBuilderConditions(null);
     }
+  };
+
+  const addDependency = () => {
+    setEditingRule((prev: any) => ({
+      ...prev,
+      dependencies: [
+        ...(prev.dependencies || []),
+        { id: `dep-${Date.now()}`, alias: `cam${(prev.dependencies?.length || 0) + 1}`, cameraId: '', roiId: '', source: 'state' }
+      ]
+    }));
+  };
+
+  const removeDependency = (idx: number) => {
+    setEditingRule((prev: any) => {
+      const deps = [...prev.dependencies];
+      deps.splice(idx, 1);
+      return { ...prev, dependencies: deps };
+    });
+  };
+
+  const updateDependency = (idx: number, field: string, val: string) => {
+    setEditingRule((prev: any) => {
+      const deps = [...prev.dependencies];
+      deps[idx] = { ...deps[idx], [field]: val };
+      return { ...prev, dependencies: deps };
+    });
   };
 
   const updateBuilderCondition = (index: number, field: string, val: string) => {
@@ -116,16 +160,16 @@ export default function App() {
     newConds[index] = { ...newConds[index], [field]: val };
     setBuilderConditions(newConds);
     
-    // Sync to underlying expression instantly
-    const expr = newConds.map(c => `${c.variable} ${c.operator} ${c.value}`).join(' && ');
+    const expr = newConds.map(c => `${c.depAlias}.${c.variable} ${c.operator} ${c.value}`).join(' && ');
     setEditingRule((prev: any) => ({...prev, condition: {...prev.condition, expression: expr}}));
   };
 
   const addBuilderCondition = () => {
     if (!builderConditions) return;
-    const newConds = [...builderConditions, { variable: 'staffCount', operator: '==', value: '0' }];
+    const defaultAlias = editingRule.dependencies?.[0]?.alias || 'default';
+    const newConds = [...builderConditions, { depAlias: defaultAlias, variable: 'staffCount', operator: '==', value: '0' }];
     setBuilderConditions(newConds);
-    const expr = newConds.map(c => `${c.variable} ${c.operator} ${c.value}`).join(' && ');
+    const expr = newConds.map(c => `${c.depAlias}.${c.variable} ${c.operator} ${c.value}`).join(' && ');
     setEditingRule((prev: any) => ({...prev, condition: {...prev.condition, expression: expr}}));
   };
 
@@ -133,7 +177,7 @@ export default function App() {
     if (!builderConditions || builderConditions.length <= 1) return;
     const newConds = builderConditions.filter((_, i) => i !== index);
     setBuilderConditions(newConds);
-    const expr = newConds.map(c => `${c.variable} ${c.operator} ${c.value}`).join(' && ');
+    const expr = newConds.map(c => `${c.depAlias}.${c.variable} ${c.operator} ${c.value}`).join(' && ');
     setEditingRule((prev: any) => ({...prev, condition: {...prev.condition, expression: expr}}));
   };
 
@@ -161,7 +205,7 @@ export default function App() {
       <header className="bg-white border-b px-6 py-4 flex items-center justify-between shadow-sm z-10 relative">
         <div className="flex items-center gap-2">
           <Activity className="text-blue-600" />
-          <h1 className="text-xl font-bold text-slate-800">Edge Rule Engine</h1>
+          <h1 className="text-xl font-bold text-slate-800">Edge Rule Engine V2</h1>
         </div>
         {health && (
           <div className="flex gap-4 text-sm font-medium text-slate-500">
@@ -178,7 +222,6 @@ export default function App() {
           <button onClick={() => setActiveTab('history')} className={`px-4 py-2 font-medium rounded-md transition-colors ${activeTab === 'history' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-slate-600 border hover:bg-slate-50'}`}>Execution History</button>
         </div>
 
-        {/* --- TABS CODE OMITTED FOR BREVITY, IDENTICAL TO BEFORE --- */}
         {activeTab === 'dashboard' && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="col-span-1 bg-white p-6 rounded-lg shadow-sm border flex flex-col gap-6">
@@ -230,48 +273,50 @@ export default function App() {
               <thead className="bg-slate-50 border-b">
                 <tr>
                   <th className="p-4 font-semibold text-slate-600 text-sm">Rule Name</th>
-                  <th className="p-4 font-semibold text-slate-600 text-sm">Target (Cam / ROI)</th>
-                  <th className="p-4 font-semibold text-slate-600 text-sm">Source</th>
+                  <th className="p-4 font-semibold text-slate-600 text-sm">Dependencies</th>
                   <th className="p-4 font-semibold text-slate-600 text-sm">Condition</th>
                   <th className="p-4 font-semibold text-slate-600 text-sm text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {rules.map(rule => (
-                  <tr key={rule.id} className={rule.enabled ? 'hover:bg-slate-50 transition-colors' : 'bg-slate-50 opacity-70'}>
-                    <td className="p-4 font-medium text-slate-800">{rule.name} <div className="text-xs font-normal text-slate-400 mt-1">{rule.id}</div></td>
-                    <td className="p-4 text-sm text-slate-600">
-                      <div className="font-medium text-slate-800">{rule.scope.cameraId}</div>
-                      <div className="text-xs">{rule.scope.roiId || <span className="italic text-slate-400">Any ROI</span>}</div>
-                    </td>
-                    <td className="p-4"><span className="px-2 py-1 bg-slate-100 border text-slate-600 rounded text-xs font-bold uppercase tracking-wider">{rule.source}</span></td>
-                    <td className="p-4">
-                      <div className="font-mono text-sm text-blue-600 max-w-xs truncate" title={rule.condition.expression}>{rule.condition.expression}</div>
-                      {rule.sustain?.durationSeconds > 0 && (
-                        <div className="text-xs font-semibold text-amber-600 mt-1 bg-amber-50 inline-block px-1.5 py-0.5 rounded border border-amber-200">
-                          sustained continuously for {rule.sustain.durationSeconds}s
-                        </div>
-                      )}
-                      {rule.window?.durationSeconds > 0 && (
-                        <div className="text-xs font-semibold text-purple-600 mt-1 bg-purple-50 inline-block px-1.5 py-0.5 rounded border border-purple-200">
-                          rolling {rule.window.durationSeconds}s window
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-4 text-right space-x-2">
-                      <button onClick={() => toggleRule(rule)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${rule.enabled ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'}`}>
-                        {rule.enabled ? <><PauseCircle size={16}/> Pause</> : <><PlayCircle size={16}/> Resume</>}
-                      </button>
-                      <button onClick={() => openEditModal(rule)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors">
-                        <Edit size={16}/> Edit
-                      </button>
-                      <button onClick={() => deleteRule(rule.id)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-red-100 text-red-700 hover:bg-red-200 transition-colors">
-                        <Trash2 size={16}/>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {rules.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-slate-500">No rules loaded.</td></tr>}
+                {rules.map(rule => {
+                  const deps = rule.dependencies || (rule.scope ? [{alias: 'default', cameraId: rule.scope.cameraId, roiId: rule.scope.roiId, source: rule.source}] : []);
+                  return (
+                    <tr key={rule.id} className={rule.enabled ? 'hover:bg-slate-50 transition-colors' : 'bg-slate-50 opacity-70'}>
+                      <td className="p-4 font-medium text-slate-800">{rule.name} <div className="text-xs font-normal text-slate-400 mt-1">{rule.id}</div></td>
+                      <td className="p-4 text-sm text-slate-600">
+                        {deps.map((d:any, i:number) => (
+                          <div key={i} className="mb-1 flex items-center gap-1">
+                            <span className="font-mono text-xs bg-slate-100 text-slate-500 px-1 rounded">{d.alias}</span>
+                            <span className="font-medium text-slate-800">{d.cameraId}</span>
+                            <span className="text-xs text-slate-400">{d.roiId ? `(${d.roiId})` : '(Any ROI)'}</span>
+                            <span className="text-[10px] uppercase font-bold text-slate-400 ml-1">{d.source}</span>
+                          </div>
+                        ))}
+                      </td>
+                      <td className="p-4">
+                        <div className="font-mono text-sm text-blue-600 max-w-xs truncate" title={rule.condition.expression}>{rule.condition.expression}</div>
+                        {rule.sustain?.durationSeconds > 0 && (
+                          <div className="text-xs font-semibold text-amber-600 mt-1 bg-amber-50 inline-block px-1.5 py-0.5 rounded border border-amber-200">
+                            sustained continuously for {rule.sustain.durationSeconds}s
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-4 text-right space-x-2">
+                        <button onClick={() => toggleRule(rule)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${rule.enabled ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'}`}>
+                          {rule.enabled ? <><PauseCircle size={16}/> Pause</> : <><PlayCircle size={16}/> Resume</>}
+                        </button>
+                        <button onClick={() => openEditModal(rule)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors">
+                          <Edit size={16}/> Edit
+                        </button>
+                        <button onClick={() => deleteRule(rule.id)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-red-100 text-red-700 hover:bg-red-200 transition-colors">
+                          <Trash2 size={16}/>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {rules.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-slate-500">No rules loaded.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -319,32 +364,44 @@ export default function App() {
             
             <div className="p-6 overflow-y-auto flex-1 space-y-6">
               
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1">Rule Name</label>
-                  <input type="text" value={editingRule.name} onChange={e => setEditingRule({...editingRule, name: e.target.value})} className="w-full border rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"/>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1">Data Source</label>
-                  <select value={editingRule.source} onChange={e => setEditingRule({...editingRule, source: e.target.value})} className="w-full border rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
-                    <option value="state">State (Polling)</option>
-                    <option value="event">Event (Discrete)</option>
-                  </select>
-                </div>
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">Rule Name</label>
+                <input type="text" value={editingRule.name} onChange={e => setEditingRule({...editingRule, name: e.target.value})} className="w-full border rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"/>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1">Target Camera ID</label>
-                  <input type="text" value={editingRule.scope.cameraId} onChange={e => setEditingRule({...editingRule, scope: {...editingRule.scope, cameraId: e.target.value}})} className="w-full border rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"/>
+              {/* V2 Dependencies Block */}
+              <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-bold text-slate-800 flex items-center gap-2"><Network size={16}/> Data Dependencies</label>
+                  <button onClick={addDependency} className="text-xs flex items-center gap-1 text-blue-600 hover:text-blue-800 font-medium bg-blue-50 px-2 py-1 rounded border border-blue-200"><Plus size={14}/> Add Source</button>
                 </div>
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1">Target ROI ID <span className="text-slate-400 font-normal">(Optional)</span></label>
-                  <input type="text" value={editingRule.scope.roiId || ''} onChange={e => setEditingRule({...editingRule, scope: {...editingRule.scope, roiId: e.target.value}})} className="w-full border rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="Leave blank for any ROI"/>
+                
+                <div className="space-y-3">
+                  {editingRule.dependencies?.map((dep: any, idx: number) => (
+                    <div key={idx} className="flex gap-2 items-center bg-white p-2 border rounded shadow-sm">
+                      <div className="w-20">
+                        <input type="text" value={dep.alias} onChange={e => updateDependency(idx, 'alias', e.target.value)} className="w-full border rounded px-2 py-1.5 text-xs font-mono focus:ring-1 focus:ring-blue-500" placeholder="Alias"/>
+                      </div>
+                      <div className="flex-1">
+                        <input type="text" value={dep.cameraId} onChange={e => updateDependency(idx, 'cameraId', e.target.value)} className="w-full border rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-500" placeholder="Camera ID"/>
+                      </div>
+                      <div className="w-24">
+                        <input type="text" value={dep.roiId || ''} onChange={e => updateDependency(idx, 'roiId', e.target.value)} className="w-full border rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-500" placeholder="ROI (Opt)"/>
+                      </div>
+                      <div className="w-24">
+                        <select value={dep.source} onChange={e => updateDependency(idx, 'source', e.target.value)} className="w-full border rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-500">
+                          <option value="state">State</option>
+                          <option value="event">Event</option>
+                        </select>
+                      </div>
+                      <button onClick={() => removeDependency(idx)} className="text-slate-400 hover:text-red-500 px-1"><X size={16}/></button>
+                    </div>
+                  ))}
+                  {(!editingRule.dependencies || editingRule.dependencies.length === 0) && (
+                    <div className="text-sm text-slate-500 italic text-center py-2">No dependencies defined. Rule will not trigger.</div>
+                  )}
                 </div>
               </div>
-
-              <hr className="border-slate-100" />
 
               {/* No Code Logic Builder */}
               <div>
@@ -361,8 +418,11 @@ export default function App() {
                       <div key={i} className="flex items-center gap-2">
                         {i > 0 && <span className="font-bold text-blue-800 text-xs mr-1 w-6">AND</span>}
                         {i === 0 && <span className="font-bold text-blue-800 text-xs mr-1 w-6">IF</span>}
+                        <select value={cond.depAlias} onChange={(e) => updateBuilderCondition(i, 'depAlias', e.target.value)} className="w-24 border border-slate-300 rounded px-2 py-1.5 text-xs font-mono shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
+                          {editingRule.dependencies?.map((d:any) => <option key={d.alias} value={d.alias}>{d.alias}</option>)}
+                        </select>
                         <select value={cond.variable} onChange={(e) => updateBuilderCondition(i, 'variable', e.target.value)} className="flex-1 border border-slate-300 rounded px-2 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          {(editingRule.source === 'event' ? EVENT_VARIABLES : STATE_VARIABLES).map(v => <option key={v.id} value={v.id}>{v.label} ({v.id})</option>)}
+                          {STATE_VARIABLES.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
                         </select>
                         <select value={cond.operator} onChange={(e) => updateBuilderCondition(i, 'operator', e.target.value)} className="w-32 border border-slate-300 rounded px-2 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
                           {OPERATORS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -377,7 +437,7 @@ export default function App() {
                       <Plus size={16}/> Add AND Condition
                     </button>
                     <div className="mt-3 pt-3 border-t border-blue-200/50 flex items-center gap-2">
-                      <span className="text-xs text-blue-600 font-medium">Generated Expression:</span>
+                      <span className="text-xs text-blue-600 font-medium">Expression:</span>
                       <code className="text-xs bg-white px-2 py-1 rounded border border-blue-100 text-slate-700">{editingRule.condition.expression}</code>
                     </div>
                   </div>
@@ -389,24 +449,12 @@ export default function App() {
                 )}
               </div>
 
-              <div className={`grid gap-4 bg-slate-50 p-4 rounded-lg border border-slate-100 ${editingRule.source === 'event' || editingRule.condition.expression.includes('window.unique') ? (editingRule.source === 'state' ? 'grid-cols-3' : 'grid-cols-2') : 'grid-cols-2'}`}>
-                
-                {(editingRule.source === 'event' || editingRule.condition.expression.includes('window.unique')) && (
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-1">Rolling Window (Secs)</label>
-                    <input type="number" value={editingRule.window?.durationSeconds || ''} onChange={e => setEditingRule({...editingRule, window: { durationSeconds: parseInt(e.target.value) || undefined }})} className="w-full border rounded-md px-3 py-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="e.g. 120 for 2 mins"/>
-                    <p className="text-[10px] text-slate-400 mt-1">Accumulates data over this duration</p>
-                  </div>
-                )}
-
-                {editingRule.source === 'state' && (
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-1">Sustain Duration (Secs)</label>
-                    <input type="number" value={editingRule.sustain?.durationSeconds || ''} onChange={e => setEditingRule({...editingRule, sustain: { durationSeconds: parseInt(e.target.value) || undefined }})} className="w-full border rounded-md px-3 py-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="e.g. 180 for 3 mins"/>
-                    <p className="text-[10px] text-slate-400 mt-1">Must remain true continuously</p>
-                  </div>
-                )}
-
+              <div className={`grid gap-4 bg-slate-50 p-4 rounded-lg border border-slate-100 grid-cols-2`}>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Sustain Duration (Secs)</label>
+                  <input type="number" value={editingRule.sustain?.durationSeconds || ''} onChange={e => setEditingRule({...editingRule, sustain: { durationSeconds: parseInt(e.target.value) || undefined }})} className="w-full border rounded-md px-3 py-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="e.g. 180 for 3 mins"/>
+                  <p className="text-[10px] text-slate-400 mt-1">Must remain true continuously</p>
+                </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-1">Trigger Cooldown (Secs)</label>
                   <input type="number" value={editingRule.trigger.cooldownSeconds} onChange={e => setEditingRule({...editingRule, trigger: {...editingRule.trigger, cooldownSeconds: parseInt(e.target.value) || 0}})} className="w-full border rounded-md px-3 py-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"/>

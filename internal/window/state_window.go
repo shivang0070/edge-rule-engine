@@ -129,3 +129,21 @@ func (w *StateWindow) LatestEntry() (StateEntry, bool) {
 	
 	return latest, true
 }
+
+func (w *StateWindow) Aggregate(agg string, field string) any {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	switch agg {
+	case "count":
+		return len(w.entries)
+	case "uniqueCount":
+		if field == "trackId.person" {
+			return len(w.UniqueTrackIds("person")) // V1 compat
+		}
+		if field == "trackId.vehicle" {
+			return len(w.UniqueTrackIds("vehicle")) // V1 compat
+		}
+	}
+	return 0
+}

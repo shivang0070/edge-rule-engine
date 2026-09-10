@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"edge-rule-engine/internal/model"
-	"edge-rule-engine/internal/window"
+	"edge-rule-engine/internal/observation"
+	"edge-rule-engine/internal/fact"
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
 	"go.uber.org/zap"
@@ -20,39 +20,34 @@ func (e *Evaluator) CompileExpression(expression string) (*vm.Program, error) {
 	return expr.Compile(expression, expr.AsBool())
 }
 
-func (e *Evaluator) BuildStateEnv(region model.Region) map[string]any {
-	return map[string]any{
-		"occupancy": map[string]any{
-			"person":  region.Occupancy.Person,
-			"vehicle": region.Occupancy.Vehicle,
-			"total":   region.Occupancy.Total,
-		},
-		"staffCount": region.StaffCount,
-		"dwell":      buildDwellEnv(region.Precalc.Dwell),
-		"entities":   region.Entities,
-	}
-}
+func (e *Evaluator) BuildRuleContext(rule *ActiveRule, obsStore *observation.Store, facts *fact.FactStore) (map[string]any, bool) {
+	env := make(map[string]any)
+	allFresh := true
 
-func buildDwellEnv(dwell map[string]model.DwellMetrics) map[string]any {
-	res := make(map[string]any)
-	for k, v := range dwell {
-		res[k] = map[string]any{
-			"avg": v.Avg,
-			"min": v.Min,
-			"max": v.Max,
+	for _, dep := range rule.Rule.Dependencies {
+		obs, freshness := obsStore.Get(dep.CameraId, dep.ROIId)
+		
+		if freshness == observation.Missing {
+			env[dep.Alias] = nil
+			allFresh = false
+		} else {
+			if freshness == observation.Stale {
+				allFresh = false
+			}
+			
+			// For backwards compatibility, if it's the "default" alias, we also spread its keys to root level
+			obsEnv := obs.ToEnv()
+			env[dep.Alias] = obsEnv
+			
+			if dep.Alias == "default" {
+				for k, v := range obsEnv {
+					env[k] = v
+				}
+			}
 		}
 	}
-	return res
-}
 
-func (e *Evaluator) BuildEventEnv(ew *window.EventWindow) map[string]any {
-	return map[string]any{
-		"window": map[string]any{
-			"count":         ew.Count(),
-			"entranceCount": ew.CountByKind("line_crossed"),
-			"exitCount":     ew.CountByKind("exit"),
-		},
-	}
+	return env, allFresh
 }
 
 func (e *Evaluator) Evaluate(program *vm.Program, env map[string]any) (bool, error) {

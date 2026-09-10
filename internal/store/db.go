@@ -24,19 +24,38 @@ func NewDB(path string) (*sql.DB, error) {
 
 // RunMigrations creates the necessary database tables and indices.
 func RunMigrations(db *sql.DB) error {
-	migrations := `
-CREATE TABLE IF NOT EXISTS task_rules (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    camera_id TEXT NOT NULL,
-    roi_id TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL,
-    rule_json TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
+	createRulesTable := `
+	CREATE TABLE IF NOT EXISTS task_rules (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		version INTEGER NOT NULL DEFAULT 1,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		camera_id TEXT NOT NULL,
+		roi_id TEXT NOT NULL DEFAULT '',
+		source TEXT NOT NULL,
+		rule_json TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	`
+	if _, err := db.Exec(createRulesTable); err != nil {
+		return err
+	}
 
+	createVersionsTable := `
+	CREATE TABLE IF NOT EXISTS rule_versions (
+		rule_id TEXT NOT NULL,
+		version INTEGER NOT NULL,
+		rule_json TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (rule_id, version)
+	);
+	`
+	if _, err := db.Exec(createVersionsTable); err != nil {
+		return err
+	}
+
+	migrations := `
 CREATE TABLE IF NOT EXISTS states (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     camera_id TEXT NOT NULL,
