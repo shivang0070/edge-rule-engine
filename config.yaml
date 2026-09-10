@@ -1,0 +1,17 @@
+server:
+  address: ":8080"
+
+database:
+  path: "./engine.db"
+
+actions:
+  directory: "./actions"
+
+logging:
+  level: "info"
+
+engine:
+  maxActiveRules: 50
+  defaultCooldownSeconds: 300
+  stateRetentionHours: 24
+  eventRetentionHours: 24

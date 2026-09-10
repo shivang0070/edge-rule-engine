@@ -1,0 +1,22 @@
+# Go binaries
+/bin/
+*.exe
+engine.exe
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# UI Node Modules
+/ui/node_modules/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Action logs
+/actions/
+
+# Temp root json
+/*.json
